@@ -1,0 +1,3 @@
+This is the first sentence of our sample text file.
+It contains some dummy data for the agent to process or read during testing.
+The autonomous agent will use this file to demonstrate its file-reading capabilities.
