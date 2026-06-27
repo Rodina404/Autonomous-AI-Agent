@@ -1,5 +1,7 @@
 import os
-import sys
+import json
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,31 +12,18 @@ from dotenv import load_dotenv
 # Load env variables before importing agent modules
 load_dotenv()
 
-from agent.agent import build_agent, run_agent
-from agent.memory import get_memory
+from agent.agent import build_agent, run_agent  # noqa: E402
+from agent.memory import get_memory, ConversationMemory  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# App Initialization
+# Path for persistent history
 # ---------------------------------------------------------------------------
-app = FastAPI(
-    title="Autonomous AI Agent API",
-    description="REST API for the LangChain-based AI Agent",
-    version="1.0.0"
-)
-
-# Allow all origins for testing. In production, restrict to your UI domain.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+HISTORY_FILE = "agent_history.json"
 
 # ---------------------------------------------------------------------------
 # State Management
 # ---------------------------------------------------------------------------
-# In-memory session store mapping session_id -> {"executor": AgentExecutor, "memory": Memory}
+# In-memory session store mapping session_id -> {"agent": graph, "memory": ConversationMemory}
 sessions: Dict[str, Dict[str, Any]] = {}
 
 def get_session(session_id: str) -> Dict[str, Any]:
@@ -43,9 +32,9 @@ def get_session(session_id: str) -> Dict[str, Any]:
         try:
             # Build fresh memory and agent per session
             memory = get_memory()
-            executor = build_agent()
+            agent = build_agent()
             sessions[session_id] = {
-                "executor": executor,
+                "agent": agent,
                 "memory": memory
             }
         except Exception as e:
@@ -53,17 +42,13 @@ def get_session(session_id: str) -> Dict[str, Any]:
     
     return sessions[session_id]
 
-import json
-
-# Path for persistent history
-HISTORY_FILE = "agent_history.json"
 
 def save_history():
     """Save all session histories to a JSON file."""
     data = {}
     for sid, session in sessions.items():
-        messages = session["memory"].load_memory_variables({}).get("chat_history", [])
-        data[sid] = [{"type": "human" if m.type == "human" else "ai", "content": m.content} for m in messages]
+        memory: ConversationMemory = session["memory"]
+        data[sid] = memory.get_history_dicts()
     
     with open(HISTORY_FILE, "w") as f:
         json.dump(data, f)
@@ -76,21 +61,39 @@ def load_history():
                 data = json.load(f)
                 for sid, messages in data.items():
                     memory = get_memory()
-                    for m in messages:
-                        if m["type"] == "human":
-                            memory.chat_memory.add_user_message(m["content"])
-                        else:
-                            memory.chat_memory.add_ai_message(m["content"])
+                    memory.load_from_dicts(messages)
                     
                     sessions[sid] = {
-                        "executor": build_agent(),
+                        "agent": build_agent(),
                         "memory": memory
                     }
         except Exception as e:
             print(f"Error loading history: {e}")
 
-# Load history when the app starts
-load_history()
+# ---------------------------------------------------------------------------
+# App Initialization — startup event loads history AFTER env vars are ready
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load persisted sessions on startup, not at module import time."""
+    load_history()
+    yield
+
+app = FastAPI(
+    title="Autonomous AI Agent API",
+    description="REST API for the LangChain-based AI Agent",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# Allow all origins for testing. In production, restrict to your UI domain.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ---------------------------------------------------------------------------
 # API Models
@@ -102,6 +105,40 @@ class ChatRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint for frontend status dot and deployment verification."""
+    return {
+        "status": "ok",
+        "model": os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        "tools": ["calculator", "file_reader", "web_search"],
+    }
+
+
+@app.get("/api/memory")
+async def get_memory_endpoint(session_id: str = ""):
+    """Return memory contents for the given session (episodes + facts)."""
+    if not session_id or session_id not in sessions:
+        return {"episodes": [], "facts": []}
+    
+    memory: ConversationMemory = sessions[session_id]["memory"]
+    history_dicts = memory.get_history_dicts()
+    
+    episodes = []
+    for i, msg in enumerate(history_dicts):
+        episodes.append({
+            "id": f"ep-{i}",
+            "content": msg["content"],
+            "type": msg["type"],
+            "timestamp": "",  # Simple memory doesn't track timestamps
+        })
+    
+    return {
+        "episodes": episodes[-10:],  # Last 10 entries
+        "facts": [],  # No structured fact extraction yet
+    }
+
+
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
     """
@@ -112,20 +149,24 @@ async def chat_endpoint(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
     
     session = get_session(request.session_id)
-    executor = session["executor"]
+    agent = session["agent"]
     memory = session["memory"]
     
     try:
         # Run agent
-        result = run_agent(request.message, executor, memory)
+        result = run_agent(request.message, agent, memory)
         
         # Graceful iteration limit fallback
         ans = result.get("answer", "")
         if "Agent stopped due to iteration limit or time limit." in ans or "Agent stopped due to max iterations" in ans:
             result["answer"] = "I apologize, but I reached my thinking limit on this complex task. I've stopped to prevent an infinite loop. Please try breaking your request into smaller steps!"
+            result["response"] = result["answer"]
             
         # Persist after each turn
         save_history()
+        
+        # Include session_id in response for Phase 2 frontend compat
+        result["session_id"] = request.session_id
         
         return result
         
@@ -138,18 +179,8 @@ async def get_history(session_id: str):
     if session_id not in sessions:
         return {"history": []}
         
-    memory = sessions[session_id]["memory"]
-    messages = memory.load_memory_variables({}).get("chat_history", [])
-    
-    # Format messages for the frontend
-    formatted_history = []
-    for msg in messages:
-        formatted_history.append({
-            "type": "human" if msg.type == "human" else "ai",
-            "content": msg.content
-        })
-        
-    return {"history": formatted_history}
+    memory: ConversationMemory = sessions[session_id]["memory"]
+    return {"history": memory.get_history_dicts()}
 
 @app.delete("/api/clear/{session_id}")
 async def clear_session(session_id: str):
@@ -165,7 +196,7 @@ async def clear_session(session_id: str):
                     del data[session_id]
                     with open(HISTORY_FILE, "w") as f:
                         json.dump(data, f)
-            except:
+            except Exception:
                 pass
         return {"status": "success", "message": f"Session {session_id} cleared."}
     return {"status": "success", "message": "Session not found."}

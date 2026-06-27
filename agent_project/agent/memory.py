@@ -2,60 +2,99 @@
 Memory management for the Autonomous AI Agent.
 
 This module manages the conversation context that is passed to the agent
-on every turn.  It uses LangChain's ConversationBufferWindowMemory to
-keep a rolling window of the last 10 human/AI exchanges, preventing
-unbounded token growth while still giving the agent useful short-term
-context.
+on every turn.  It uses a simple message list with a rolling window of
+the last k exchanges, preventing unbounded token growth while still
+giving the agent useful short-term context.
+
+LangChain v1.2+ removed ConversationBufferWindowMemory, so this module
+provides an equivalent using plain message lists.
 
 Public API
 ----------
-get_memory()          → ConversationBufferWindowMemory
-clear_memory(memory)  → None
+get_memory()          → ConversationMemory
+ConversationMemory    — the memory class
 """
 
-from langchain_classic.memory import ConversationBufferWindowMemory
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 
 
-def get_memory() -> ConversationBufferWindowMemory:
+class ConversationMemory:
+    """Simple sliding-window conversation memory using LangChain messages.
+
+    Keeps the last `k` human/AI exchange pairs (2*k messages total).
+    Compatible with the create_agent message-based API.
     """
-    Create and return a fresh ConversationBufferWindowMemory instance.
 
-    Configuration
-    -------------
-    k=10              : retain the last 10 human/AI exchanges.
-    memory_key        : 'chat_history' — must match the {chat_history}
-                        variable in the agent's PromptTemplate.
-    return_messages   : True — returns a list of BaseMessage objects so
-                        that ChatGroq can consume them directly without
-                        extra serialisation.
+    def __init__(self, k: int = 10):
+        self.k = k
+        self._messages: list[BaseMessage] = []
 
-    Returns
-    -------
-    ConversationBufferWindowMemory
-        A ready-to-use memory object.  Pass it to run_agent() so the
-        agent accumulates context across turns.
+    def get_messages(self) -> list[BaseMessage]:
+        """Return the current message history (windowed to last k pairs)."""
+        # Each pair is 2 messages (human + ai), so keep last 2*k
+        max_messages = self.k * 2
+        if len(self._messages) > max_messages:
+            return self._messages[-max_messages:]
+        return list(self._messages)
+
+    def add_user_message(self, content: str) -> None:
+        """Add a user message to history."""
+        self._messages.append(HumanMessage(content=content))
+
+    def add_ai_message(self, content: str) -> None:
+        """Add an AI response to history."""
+        self._messages.append(AIMessage(content=content))
+
+    def get_history_dicts(self) -> list[dict]:
+        """Return messages as plain dicts for JSON serialization."""
+        result = []
+        for msg in self._messages:
+            msg_type = "human" if isinstance(msg, HumanMessage) else "ai"
+            result.append({"type": msg_type, "content": msg.content})
+        return result
+
+    def load_from_dicts(self, messages: list[dict]) -> None:
+        """Restore memory from a list of plain dicts."""
+        self._messages.clear()
+        for m in messages:
+            if m["type"] == "human":
+                self._messages.append(HumanMessage(content=m["content"]))
+            else:
+                self._messages.append(AIMessage(content=m["content"]))
+
+    def clear(self) -> None:
+        """Wipe all stored messages."""
+        self._messages.clear()
+
+
+def get_memory(k: int = 10) -> ConversationMemory:
     """
-    return ConversationBufferWindowMemory(
-        k=10,
-        memory_key="chat_history",
-        return_messages=True,
-    )
-
-
-def clear_memory(memory: ConversationBufferWindowMemory) -> None:
-    """
-    Wipe all stored messages from the given memory buffer.
-
-    Call this when the user starts a new topic or explicitly asks to
-    reset the conversation.  The same memory object can be reused
-    immediately after clearing.
+    Create and return a fresh ConversationMemory instance.
 
     Parameters
     ----------
-    memory : ConversationBufferWindowMemory
+    k : int
+        Number of exchange pairs to retain (default: 10).
+
+    Returns
+    -------
+    ConversationMemory
+        A ready-to-use memory object.  Pass it to run_agent() so the
+        agent accumulates context across turns.
+    """
+    return ConversationMemory(k=k)
+
+
+def clear_memory(memory: ConversationMemory) -> None:
+    """
+    Wipe all stored messages from the given memory buffer.
+
+    Parameters
+    ----------
+    memory : ConversationMemory
         The memory instance to clear (mutated in place).
     """
     memory.clear()
 
 
-__all__ = ["get_memory", "clear_memory"]
+__all__ = ["get_memory", "clear_memory", "ConversationMemory"]

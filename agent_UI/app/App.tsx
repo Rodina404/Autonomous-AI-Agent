@@ -1,135 +1,99 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { History, Bot, Sparkles } from "lucide-react";
+import { History, Bot, Sparkles, Terminal, Activity } from "lucide-react";
 import { ChatMessage } from "./components/ChatMessage";
 import { MessageInput } from "./components/MessageInput";
-import { HistoryPanel } from "./components/HistoryPanel";
 import { ThinkingLoader } from "./components/ThinkingLoader";
+import { TracePanel, AgentStep } from "./components/TracePanel";
+import { MemoryDrawer } from "./components/MemoryDrawer";
 
-// Stable SESSION_ID from localStorage
+// Stable SESSION_ID from sessionStorage
 const getSessionId = () => {
-  if (typeof window === 'undefined') return 'default-session';
-  let id = localStorage.getItem('agent_session_id');
+  if (typeof window === "undefined") return "default-session";
+  let id = sessionStorage.getItem("agent_session_id");
   if (!id) {
     id = Math.random().toString(36).substring(7);
-    localStorage.setItem('agent_session_id', id);
+    sessionStorage.setItem("agent_session_id", id);
   }
   return id;
 };
 
 const SESSION_ID = getSessionId();
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = (import.meta.env.VITE_API_URL as string) || "http://localhost:8000";
 
 interface Message {
   id: string;
   role: "user" | "agent";
   content: string;
   timestamp: Date;
-  reasoning?: ReasoningStep[];
-}
-
-interface ReasoningStep {
-  id: string;
-  type: "started" | "tool" | "result" | "completed" | "error";
-  tool?: string;
-  content: string;
-  timestamp: Date;
-}
-
-interface HistoryItem {
-  id: string;
-  query: string;
-  timestamp: Date;
-  tools: string[];
-  summary: string;
 }
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [history, setHistory] = useState<HistoryItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isMemoryOpen, setIsMemoryOpen] = useState(false);
+  const [memoryRefreshCounter, setMemoryRefreshCounter] = useState(0);
+  
+  // Trace telemetry steps state
+  const [currentTraceSteps, setCurrentTraceSteps] = useState<AgentStep[]>([]);
+  
+  // Health check state
+  const [isBackendHealthy, setIsBackendHealthy] = useState<boolean | null>(null);
 
-  // Load history on mount
+  // Mobile layout state
+  const [isTraceVisibleMobile, setIsTraceVisibleMobile] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+
+  // Handle window resizing
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // Debounced 30s Health Check
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/health`);
+        if (res.ok) {
+          setIsBackendHealthy(true);
+        } else {
+          setIsBackendHealthy(false);
+        }
+      } catch {
+        setIsBackendHealthy(false);
+      }
+    };
+
+    checkHealth();
+    const interval = setInterval(checkHealth, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Load message history on mount
   useEffect(() => {
     fetch(`${API_BASE_URL}/api/history/${SESSION_ID}`)
-      .then(res => res.json())
-      .then(data => {
+      .then((res) => {
+        if (res.ok) return res.json();
+        throw new Error();
+      })
+      .then((data) => {
         if (data.history) {
-          // Populate main chat messages
           const mappedMessages = data.history.map((m: any, i: number) => ({
             id: `hist-${i}`,
             role: m.type === "human" ? "user" : "agent",
             content: m.content,
-            timestamp: new Date()
+            timestamp: new Date(),
           }));
           setMessages(mappedMessages);
-
-          // Populate history panel items (group into interactions)
-          const historyItems: HistoryItem[] = [];
-          for (let i = 0; i < data.history.length; i += 2) {
-            const humanMsg = data.history[i];
-            const aiMsg = data.history[i+1];
-            if (humanMsg && humanMsg.type === "human") {
-              historyItems.push({
-                id: `hitem-${i}`,
-                query: humanMsg.content,
-                timestamp: new Date(),
-                tools: [], // Backend currently doesn't persist tool list per turn easily
-                summary: aiMsg ? (aiMsg.content.slice(0, 100) + "...") : "Awaiting response..."
-              });
-            }
-          }
-          setHistory(historyItems.reverse());
         }
       })
-      .catch(err => console.error("History fetch error:", err));
+      .catch((err) => console.error("History fetch error:", err));
   }, []);
-
-  const mapLogsToReasoning = (logs: any[]): ReasoningStep[] => {
-    return logs.map((log, i) => {
-      let type: ReasoningStep["type"] = "started";
-      let content = "";
-
-      switch (log.type) {
-        case "chain_start":
-          type = "started";
-          content = "Agent started processing your request";
-          break;
-        case "agent_action":
-          type = "tool";
-          content = `Calling tool: ${log.input}`;
-          break;
-        case "tool_start":
-          type = "tool";
-          content = `Executing tool: ${log.tool}`;
-          break;
-        case "tool_end":
-          type = "result";
-          content = `Result: ${log.output}`;
-          break;
-        case "tool_error":
-          type = "error";
-          content = `Error: ${log.error}`;
-          break;
-        case "agent_finish":
-          type = "completed";
-          content = "Final response generated";
-          break;
-        default:
-          type = "started";
-          content = "Processing step";
-      }
-
-      return {
-        id: `r-${Date.now()}-${i}`,
-        type,
-        tool: log.tool,
-        content,
-        timestamp: new Date()
-      };
-    });
-  };
 
   const handleSendMessage = async (content: string) => {
     const userMessage: Message = {
@@ -158,16 +122,25 @@ export default function App() {
         role: "agent",
         content: data.answer,
         timestamp: new Date(),
-        reasoning: data.structured_logs ? mapLogsToReasoning(data.structured_logs) : [],
       };
 
+      // Set the trace reasoning steps for the left/trace panel
+      if (data.steps) {
+        setCurrentTraceSteps(data.steps);
+      } else if (data.intermediate_steps) {
+        setCurrentTraceSteps(data.intermediate_steps);
+      } else {
+        setCurrentTraceSteps([]);
+      }
+
       setMessages((prev) => [...prev, agentMessage]);
+      setMemoryRefreshCounter((prev) => prev + 1); // trigger auto-refresh for MemoryDrawer
     } catch (error) {
       console.error("Chat error:", error);
       const errorMessage: Message = {
         id: `msg-${Date.now()}-error`,
         role: "agent",
-        content: "⚠️ I'm sorry, I'm having trouble connecting to the backend server. Please make sure it's running on port 8000.",
+        content: "⚠️ I'm sorry, I'm having trouble connecting to the backend server. Please make sure the API is running and reachable.",
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, errorMessage]);
@@ -177,110 +150,145 @@ export default function App() {
   };
 
   return (
-    <div className="h-screen w-full bg-background relative flex flex-col">
+    <div className="h-screen w-full bg-[#0a0a0f] text-[#e8e9ed] font-sans flex flex-col overflow-hidden relative">
       {/* Background Glow */}
       <div
-        className="absolute inset-0 opacity-30 pointer-events-none"
+        className="absolute inset-0 opacity-10 pointer-events-none"
         style={{
           background:
-            "radial-gradient(circle at 20% 50%, var(--emerald-glow) 0%, transparent 50%), radial-gradient(circle at 80% 80%, rgba(59, 130, 246, 0.15) 0%, transparent 50%)",
+            "radial-gradient(circle at 10% 30%, var(--primary) 0%, transparent 40%), radial-gradient(circle at 90% 80%, rgba(59, 130, 246, 0.15) 0%, transparent 40%)",
         }}
       />
 
-      {/* FIXED HEADER */}
-      <header
-        className="fixed top-0 left-0 right-0 backdrop-blur-xl border-b z-20"
-        style={{
-          background: "var(--glass-bg)",
-          borderColor: "var(--glass-border)",
-          height: "72px"
-        }}
-      >
-        <div className="max-w-5xl mx-auto px-6 h-full flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <motion.div
-              className="p-2 rounded-xl bg-gradient-to-br from-primary to-primary/70"
-              animate={{
-                boxShadow: [
-                  "0 0 20px var(--emerald-glow)",
-                  "0 0 30px var(--emerald-glow)",
-                  "0 0 20px var(--emerald-glow)",
-                ],
-              }}
-              transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-            >
-              <Bot className="w-6 h-6 text-primary-foreground" />
-            </motion.div>
-            <div>
-              <h1 className="flex items-center gap-2 text-lg font-semibold">
-                Autonomous AI Agent
-                <Sparkles className="w-4 h-4 text-primary" />
-              </h1>
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                Powered by Llama 3.3 via Groq
-              </p>
-            </div>
+      {/* HEADER */}
+      <header className="h-[64px] shrink-0 border-b border-white/5 bg-slate-950/80 backdrop-blur-md flex items-center justify-between px-6 z-20">
+        <div className="flex items-center gap-3">
+          <div className="p-1.5 rounded-lg bg-primary/10 border border-primary/20 text-primary">
+            <Bot className="w-5 h-5" />
+          </div>
+          <div>
+            <h1 className="text-xs sm:text-sm font-semibold tracking-wide text-foreground flex items-center gap-1.5">
+              Autonomous AI Agent
+              <Sparkles className="w-3 h-3 text-primary shrink-0" />
+            </h1>
+            <p className="text-[9px] sm:text-[10px] text-muted-foreground font-mono">
+              Llama 3.3 · Groq
+            </p>
+          </div>
+        </div>
+
+        {/* Live Status indicator */}
+        <div className="flex items-center gap-2 sm:gap-4">
+          <div className="hidden lg:flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
+            <span className="text-[10px] opacity-40">SESSION:</span>
+            <span className="text-foreground font-semibold">{SESSION_ID.substring(0, 8)}</span>
           </div>
 
-          <motion.button
-            onClick={() => setIsHistoryOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl backdrop-blur-lg border transition-all duration-200"
-            style={{
-              background: "var(--glass-bg)",
-              borderColor: "var(--glass-border)",
-            }}
-            whileHover={{ scale: 1.05, boxShadow: "0 8px 20px rgba(16, 185, 129, 0.2)" }}
-            whileTap={{ scale: 0.95 }}
+          <div className="flex items-center gap-1.5 px-2 py-1 sm:px-2.5 rounded-md bg-white/[0.02] border border-white/5 text-[10px] font-mono">
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                isBackendHealthy === true
+                  ? "bg-primary animate-pulse"
+                  : isBackendHealthy === false
+                  ? "bg-destructive"
+                  : "bg-amber-500"
+              }`}
+            />
+            <span className="text-muted-foreground uppercase text-[8px] tracking-wider hidden sm:inline">
+              {isBackendHealthy === true ? "online" : isBackendHealthy === false ? "offline" : "connecting"}
+            </span>
+          </div>
+
+          {/* Toggle trace button for mobile layout */}
+          {isMobile && (
+            <button
+              onClick={() => setIsTraceVisibleMobile(!isTraceVisibleMobile)}
+              className={`p-2 rounded-lg border transition-all duration-200 ${
+                isTraceVisibleMobile
+                  ? "bg-primary/10 border-primary/20 text-primary"
+                  : "bg-white/[0.02] border-white/5 text-muted-foreground"
+              }`}
+            >
+              <Terminal className="w-4 h-4" />
+            </button>
+          )}
+
+          <button
+            onClick={() => setIsMemoryOpen(true)}
+            className="flex items-center gap-2 p-2 sm:px-3.5 sm:py-1.5 rounded-lg bg-white/[0.02] hover:bg-white/[0.05] border border-white/5 hover:border-white/10 text-xs font-semibold tracking-wide text-foreground transition-all duration-200"
           >
-            <History className="w-4 h-4" />
-            <span className="text-sm font-medium">History</span>
-          </motion.button>
+            <History className="w-4 h-4 text-primary" />
+            <span className="hidden sm:inline">Memory</span>
+          </button>
         </div>
       </header>
 
-      {/* SCROLLABLE CONTENT */}
-      <main className="flex-1 overflow-y-auto pt-[72px] pb-[120px] px-6">
-        <div className="max-w-4xl mx-auto py-8">
-          {messages.map((message) => (
-            <ChatMessage key={message.id} message={message} />
-          ))}
-
-          <AnimatePresence>
-            {isProcessing && (
-              <div className="flex justify-start mb-6">
-                <ThinkingLoader />
-              </div>
-            )}
-          </AnimatePresence>
-        </div>
-      </main>
-
-      {/* FIXED FOOTER */}
-      <footer
-        className="fixed bottom-0 left-0 right-0 backdrop-blur-xl border-t z-20"
-        style={{
-          background: "var(--glass-bg)",
-          borderColor: "var(--glass-border)",
-        }}
-      >
-        <div className="max-w-4xl mx-auto px-6 py-6">
-          <MessageInput onSend={handleSendMessage} isProcessing={isProcessing} />
-        </div>
-      </footer>
-
-      <AnimatePresence>
-        {isHistoryOpen && (
-          <HistoryPanel
-            isOpen={isHistoryOpen}
-            onClose={() => setIsHistoryOpen(false)}
-            history={history}
-            onSelectItem={(id) => {
-              console.log("Selected history item:", id);
-              setIsHistoryOpen(false);
-            }}
+      {/* WORKSPACE PANELS */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Left Panel: Telemetry (visible on desktop or active on mobile) */}
+        <div
+          className={`w-[30%] min-w-[320px] max-w-[400px] shrink-0 h-full transition-transform duration-300 z-10 ${
+            isMobile
+              ? isTraceVisibleMobile
+                ? "absolute inset-y-0 left-0 w-full max-w-full translate-x-0"
+                : "absolute inset-y-0 left-0 w-full max-w-full -translate-x-full"
+              : "block"
+          }`}
+        >
+          <TracePanel
+            steps={currentTraceSteps}
+            onClose={isMobile ? () => setIsTraceVisibleMobile(false) : undefined}
           />
-        )}
-      </AnimatePresence>
+        </div>
+
+        {/* Right Panel: Chat (always visible) */}
+        <div className="flex-1 flex flex-col h-full bg-[#0a0a0f]/40 relative">
+          {/* Scrollable Message Thread */}
+          <div className="flex-1 overflow-y-auto px-6 py-6 scroll-smooth">
+            <div className="max-w-3xl mx-auto space-y-4">
+              {messages.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground select-none">
+                  <div className="p-4 rounded-full bg-white/[0.01] border border-white/5 mb-4 animate-bounce">
+                    <Sparkles className="w-10 h-10 text-primary/40" />
+                  </div>
+                  <h3 className="text-base font-semibold text-foreground">Welcome to Autonomous telemetry console</h3>
+                  <p className="text-xs text-muted-foreground max-w-xs mt-2 leading-relaxed">
+                    Ask me math queries, files manipulation tasks, or web knowledge inquiries to initialize operational agents.
+                  </p>
+                </div>
+              ) : (
+                messages.map((message) => (
+                  <ChatMessage key={message.id} message={message} />
+                ))
+              )}
+
+              <AnimatePresence>
+                {isProcessing && (
+                  <div className="flex justify-start py-2">
+                    <ThinkingLoader />
+                  </div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+
+          {/* Footer Input Area */}
+          <div className="p-6 bg-gradient-to-t from-slate-950/80 to-transparent border-t border-white/5">
+            <div className="max-w-3xl mx-auto">
+              <MessageInput onSend={handleSendMessage} isProcessing={isProcessing} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Memory Drawer Modal Overlay */}
+      <MemoryDrawer
+        isOpen={isMemoryOpen}
+        onClose={() => setIsMemoryOpen(false)}
+        sessionId={SESSION_ID}
+        apiUrl={API_BASE_URL}
+        triggerRefresh={memoryRefreshCounter}
+      />
     </div>
   );
 }

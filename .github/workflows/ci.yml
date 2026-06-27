@@ -1,0 +1,73 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  backend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff pytest
+          pip install -r agent_project/requirements.txt
+
+      - name: Run Setup Check (with Mock Keys)
+        env:
+          GROQ_API_KEY: "gsk_mock_key_for_testing_1234567890abcdef"
+          TAVILY_API_KEY: "tvly_mock_key_for_testing_1234567890abcdef"
+        run: |
+          cd agent_project
+          python setup_check.py
+
+      - name: Run Lint Check (Ruff)
+        run: |
+          ruff check agent_project/
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Node actions don't use this, but uses standard setup-node
+      
+      - name: Install Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: agent_UI/package-lock.json
+
+      - name: Install Frontend Dependencies
+        run: |
+          cd agent_UI
+          npm ci
+
+      - name: Build Frontend Application
+        run: |
+          cd agent_UI
+          npm run build
+
+      - name: Confirm Build Output Exists
+        run: |
+          if [ ! -d "agent_UI/dist" ]; then
+            echo "Error: Build output directory agent_UI/dist was not created!"
+            exit 1
+          fi

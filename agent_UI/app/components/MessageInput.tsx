@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { motion } from "motion/react";
-import { Send, Paperclip, Loader2 } from "lucide-react";
+import { Send, Loader2, Keyboard } from "lucide-react";
 
 interface MessageInputProps {
   onSend: (message: string) => void;
@@ -10,89 +10,85 @@ interface MessageInputProps {
 export function MessageInput({ onSend, isProcessing }: MessageInputProps) {
   const [input, setInput] = useState("");
   const [isFocused, setIsFocused] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  // Auto-resize handler
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = "auto";
+      textarea.style.height = `${textarea.scrollHeight}px`;
+    }
+  }, [input]);
+
+  const handleSubmit = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (input.trim() && !isProcessing) {
       onSend(input.trim());
       setInput("");
+      // Reset textarea height
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+      }
     }
   };
 
   return (
     <form onSubmit={handleSubmit} className="relative">
       <motion.div
-        className="rounded-2xl backdrop-blur-xl border transition-all duration-300 overflow-hidden"
+        className="rounded-xl border transition-all duration-300 overflow-hidden bg-slate-900/40 border-white/5"
         style={{
-          background: "var(--glass-bg)",
-          borderColor: isFocused ? "var(--primary)" : "var(--glass-border)",
           boxShadow: isFocused
-            ? "0 0 30px var(--emerald-glow), 0 8px 32px rgba(0, 0, 0, 0.3)"
-            : "0 4px 16px rgba(0, 0, 0, 0.2)",
+            ? "0 0 25px rgba(0, 212, 170, 0.15), 0 8px 32px rgba(0, 0, 0, 0.4)"
+            : "0 4px 16px rgba(0, 0, 0, 0.3)",
         }}
         animate={{
-          scale: isFocused ? 1.01 : 1,
+          borderColor: isFocused ? "var(--primary)" : "rgba(255, 255, 255, 0.05)",
         }}
         transition={{ duration: 0.2 }}
       >
         <div className="flex items-end gap-3 p-4">
-          <button
-            type="button"
-            className="flex-shrink-0 p-2 rounded-lg hover:bg-white/10 transition-colors duration-200 text-muted-foreground hover:text-foreground"
-            aria-label="Attach file"
-          >
-            <Paperclip className="w-5 h-5" />
-          </button>
-
           <textarea
+            ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
             onKeyDown={(e) => {
+              // Submit on Enter, allow Shift+Enter for newlines
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                handleSubmit(e);
+                handleSubmit();
               }
             }}
-            placeholder="Ask the AI agent anything..."
-            className="flex-1 bg-transparent border-none outline-none resize-none max-h-32 text-foreground placeholder:text-muted-foreground"
+            placeholder="Type message... (Enter to send, Shift+Enter for newline)"
+            className="flex-1 bg-transparent border-none outline-none resize-none max-h-32 text-sm text-foreground placeholder:text-muted-foreground font-sans leading-relaxed py-1"
             style={{ minHeight: "24px" }}
             rows={1}
             disabled={isProcessing}
           />
 
-          <motion.button
-            type="submit"
-            disabled={!input.trim() || isProcessing}
-            className="flex-shrink-0 p-3 rounded-xl bg-gradient-to-br from-primary to-primary/80 text-primary-foreground disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-200"
-            whileHover={{ scale: input.trim() && !isProcessing ? 1.05 : 1 }}
-            whileTap={{ scale: input.trim() && !isProcessing ? 0.95 : 1 }}
-            style={{
-              boxShadow: input.trim()
-                ? "0 0 20px var(--emerald-glow)"
-                : "none",
-            }}
-          >
-            {isProcessing ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : (
-              <Send className="w-5 h-5" />
-            )}
-          </motion.button>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-muted-foreground/60 font-mono hidden sm:flex items-center gap-1 select-none">
+              <Keyboard className="w-3 h-3" /> Enter
+            </span>
+            
+            <motion.button
+              type="submit"
+              disabled={!input.trim() || isProcessing}
+              className="flex-shrink-0 p-2.5 rounded-lg bg-primary text-primary-foreground disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-200"
+              whileHover={{ scale: input.trim() && !isProcessing ? 1.05 : 1 }}
+              whileTap={{ scale: input.trim() && !isProcessing ? 0.95 : 1 }}
+            >
+              {isProcessing ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+            </motion.button>
+          </div>
         </div>
       </motion.div>
-
-      <motion.div
-        className="absolute -inset-0.5 rounded-2xl opacity-0 -z-10 blur-xl"
-        style={{
-          background: "linear-gradient(45deg, var(--primary), var(--chart-2))",
-        }}
-        animate={{
-          opacity: isFocused ? 0.3 : 0,
-        }}
-        transition={{ duration: 0.3 }}
-      />
     </form>
   );
 }

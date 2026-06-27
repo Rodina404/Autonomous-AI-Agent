@@ -49,14 +49,14 @@ def check_env_vars() -> bool:
         print("Error: GROQ_API_KEY is not set. Add it to your .env file.")
         ok = False
     else:
-        print(f"GROQ_API_KEY   : found (starts with {groq_key[:8]}...)")
+        print(f"GROQ_API_KEY   : found (***...{groq_key[-4:]})")
 
     tavily_key = os.environ.get("TAVILY_API_KEY", "")
     if not tavily_key:
         print("Error: TAVILY_API_KEY is not set. Add it to your .env file.")
         ok = False
     else:
-        print(f"TAVILY_API_KEY : found (starts with {tavily_key[:8]}...)")
+        print(f"TAVILY_API_KEY : found (***...{tavily_key[-4:]})")
 
     groq_model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     print(f"GROQ_MODEL     : {groq_model}")

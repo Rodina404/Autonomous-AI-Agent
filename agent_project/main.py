@@ -13,6 +13,7 @@ import os
 import sys
 import json
 from datetime import datetime
+from dotenv import load_dotenv
 
 # Force utf-8 encoding for standard output/error to prevent UnicodeEncodeError on Windows
 if sys.stdout.encoding != 'utf-8':
@@ -23,8 +24,6 @@ if sys.stderr.encoding != 'utf-8':
 import warnings
 from langchain_core._api.deprecation import LangChainDeprecationWarning
 warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
-
-from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
 # Environment — must happen BEFORE importing agent modules so that
@@ -82,7 +81,7 @@ def _print_banner() -> None:
     print("  ╚══════════════════════════════════════╝\n")
 
 
-import textwrap
+import textwrap  # noqa: E402
 
 def display_result(result: dict) -> None:
     logs = result.get("structured_logs", [])
@@ -94,7 +93,7 @@ def display_result(result: dict) -> None:
         return text.ljust(width)
 
     # ── Reasoning Trace block (only if tools were used) ──
-    tool_logs = [l for l in logs if l["type"] in
+    tool_logs = [log for log in logs if log["type"] in
                  ("tool_start", "tool_end", "tool_error", "agent_action")]
 
     if tool_logs:
